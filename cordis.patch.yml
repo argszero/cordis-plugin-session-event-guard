@@ -1,0 +1,42 @@
+# The @argszero/cordis-plugin-session-event-guard bundle patch: mount and go.
+#
+# One report (#8233) describes an external plugin author writing a custom event
+# into a session log. The type extension compiled, the running process worked,
+# and the next process to load that log refused it:
+#
+#   session "<id>" contains event type "filesnap/point" (seq 0) unknown to this
+#   harness and not marked ignorable; refusing to interpret the log — it was
+#   likely written by a newer harness
+#
+# That is not an accident of that one plugin. Session.append builds and freezes
+# the envelope itself, and the object it freezes is
+# `{ type, seq, time, data, ...surfaceMetadata }` — there is no `ignorable`
+# field and no parameter that could add one. So every event written through the
+# natural call is a REQUIRED event, and an out-of-repo type is outside the
+# generated vocabulary by construction. Write succeeds; read fails; the failure
+# is deferred to a later process that may not even be the one that wrote it.
+#
+# The compatibility mechanism the harness documents is the persisted marker, and
+# the seam that can set it is public: build the envelope yourself and hand it to
+# a write handle — `ctx.sessionPersistence.open(id, 'write')` → `handle.append`.
+# `message-feedback` already reaches that path from outside core.
+#
+# This plugin supplies what is missing around that seam:
+#
+#   - a write-boundary verdict for a type name, stating both paths and the one
+#     thing session.append cannot do;
+#   - a durable-log audit that opens stored sessions through the same validated
+#     read seam a restart uses, and quotes the reader's refusal verbatim rather
+#     than predicting it;
+#   - a live observer on `session/event`, so the mistake is reported in the
+#     process that made it, with the type and the sequence;
+#   - `buildExternalEvent()`, the envelope the handle seam accepts, with the
+#     four refusals a hand-rolled one gets wrong.
+#
+# It writes to no session log, and it changes no core contract: the verdict is
+# computed from the vocabulary and the session.append contract, and the audit
+# only reads.
+
+- insert:
+    - id: session-event-guard
+      name: '@argszero/cordis-plugin-session-event-guard'
