@@ -1,7 +1,7 @@
 {
   "name": "@argszero/cordis-plugin-session-event-guard",
-  "description": "Diagnoses, at the write boundary, the one session-log mistake an external plugin cannot see: Session.append builds and freezes the envelope itself and cannot set `ignorable`, so any event type outside this harness's generated vocabulary written that way is a REQUIRED event, and the storage read path refuses the whole log later \u2014 in a different process, for every reader that does not load the writing plugin. The plugin judges a type before it is written on both write paths, audits stored sessions through the same validated read seam a restart uses and quotes the reader's refusal verbatim, observes live session/event writes so the mistake is reported where it is made, and builds the envelope the public handle seam accepts. It never writes to a session log.",
-  "version": "0.1.0",
+  "description": "Diagnoses, at the write boundary, the two session-log mistakes an external plugin cannot see from where it stands. The first is a session event outside this harness's generated vocabulary: Session.append builds and freezes the envelope itself and cannot set `ignorable`, so such an event is REQUIRED, and the storage read path refuses the whole log later \u2014 in a different process, for every reader that does not load the writing plugin. The second is a message whose `source` still uses the anonymous `kind: 'plugin'` wrapper that session format V4 retired: it is refused synchronously at the physical row boundary with one sentence that names no event, no sequence and no plugin. The plugin judges a type and a `source` before either is written, audits stored sessions through the same validated read seam a restart uses and quotes the reader's refusal verbatim, observes live session/event writes so each mistake is reported where it is made, and builds the envelope the public handle seam accepts. It never writes to a session log.",
+  "version": "0.2.0",
   "publishConfig": {
     "access": "public"
   },
@@ -40,6 +40,9 @@
     "session",
     "session-log",
     "session-event",
+    "source-kind",
+    "producer-kind",
+    "session-format-v4",
     "ignorable",
     "persistence",
     "diagnostics",

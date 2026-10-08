@@ -47,16 +47,26 @@ import { auditStore, auditStoredSession } from './audit.ts'
 import type { SessionAudit } from './audit.ts'
 import { writeVerdict } from './classify.ts'
 import type { WriteVerdict } from './classify.ts'
-import { renderStoreAudit, renderWriteVerdict } from './report.ts'
+import { renderLiveSources, renderSourceVerdict, renderStoreAudit, renderWriteVerdict } from './report.ts'
+import { scanEventSources, sourceVerdict } from './source-kind.ts'
+import type { SourceOffence, SourceVerdict } from './source-kind.ts'
 import { KNOWN_EVENT_TYPES, standingOf, vocabularyReport } from './vocabulary.ts'
 
-export { auditStore, auditStoredSession } from './audit.ts'
-export type { AuditFailure, ExternalEventRecord, SessionAudit } from './audit.ts'
+export { auditStore, auditStoredSession, causeOf } from './audit.ts'
+export type { AuditCause, AuditFailure, ExternalEventRecord, SessionAudit } from './audit.ts'
 export { writeVerdict } from './classify.ts'
 export type { WriteVerdict } from './classify.ts'
 export { buildExternalEvent, SessionEventGuardError } from './envelope.ts'
 export type { ExternalEvent, ExternalEventInput } from './envelope.ts'
-export { renderStoreAudit, renderSessionAudit, renderWriteVerdict } from './report.ts'
+export {
+  renderLiveSources, renderSessionAudit, renderSourceVerdict, renderStoreAudit, renderWriteVerdict,
+} from './report.ts'
+export {
+  MESSAGE_SLOTS, inspectSource, replacementFor, scanEventSources, slotLabel, sourceVerdict, walkMessageSlots,
+} from './source-kind.ts'
+export type {
+  MessageSlotSpec, SourceDefect, SourceInspection, SourceOffence, SourceReplacement, SourceVerdict,
+} from './source-kind.ts'
 export { KNOWN_EVENT_TYPES, standingOf, vocabularyReport } from './vocabulary.ts'
 export type { EventStanding, VocabularyReport } from './vocabulary.ts'
 
@@ -84,10 +94,24 @@ export interface LiveOffence {
   count: number
 }
 
+/**
+ * One live message whose `source` the V4 row admission refuses.
+ *
+ * A second ledger, keyed by what actually offends (event type, payload slot,
+ * clause and producer) rather than by event type: the same event can carry two
+ * offending messages in different slots, and they need different fixes.
+ */
+export interface LiveSourceOffence extends SourceOffence {
+  /** How many times this exact offence was seen. */
+  count: number
+}
+
 /** Arguments the tool accepts. */
 export interface GuardToolArgs {
   /** One event type a plugin intends to write, to be judged before it is written. */
   type?: string
+  /** One `source` object, as JSON, a plugin intends to attach to a message. */
+  source?: string
   /** One stored session to open and audit. */
   session?: string
   /** How many of the newest stored sessions to open when no `session` is named. */
@@ -101,11 +125,15 @@ export interface GuardToolValue {
   vocabularyVersion: string
   writeType?: string
   writeVerdict?: string
+  sourceKind?: string
+  sourceDefect?: string
+  sourceAdmitted?: boolean
   audited: number
   total: number
   refused: number
   refusedSessions: string[]
   liveTypes: string[]
+  liveSources: string[]
   report: string
 }
 
@@ -121,23 +149,31 @@ export interface GuardToolValue {
  */
 export function apply(ctx: Context): void {
   const ledger = new Map<string, Map<string, LiveOffence>>()
+  const sourceLedger = new Map<string, Map<string, LiveSourceOffence>>()
 
   ctx.on('session/event', (session, event) => {
+    noteUndeclaredType(session, event)
+    noteRefusedSources(session, event)
+  })
+
+  /**
+   * Report an event type a reader without the writer's plugin must refuse.
+   * @param session - the session the event was committed to.
+   * @param event - the committed event.
+   */
+  function noteUndeclaredType(session: { id: string }, event: { type: string, seq: number, ignorable?: unknown }): void {
     const standing = standingOf(event.type, event.ignorable)
     if (standing !== 'required') return
-    let offences = ledger.get(session.id)
-    if (offences === undefined) {
-      if (ledger.size >= LEDGER_SESSIONS) ledger.delete(ledger.keys().next().value as string)
-      offences = new Map()
-      ledger.set(session.id, offences)
-    }
-    const existing = offences.get(event.type)
+    const offenceList = ledgerFor(ledger, session.id)
+    const existing = offenceList.get(event.type)
     if (existing !== undefined) {
       existing.count += 1
       return
     }
-    if (offences.size >= LEDGER_LIMIT) return
-    offences.set(event.type, { type: event.type, firstSeq: event.seq, count: 1 })
+    if (offenceList.size >= LEDGER_LIMIT) return
+    offenceList.set(event.type, {
+      type: event.type, firstSeq: event.seq, count: 1,
+    })
     ctx.logger.warn(
       `session-event-guard: session "${session.id}" appended event type "${event.type}" (seq ${event.seq}),`
       + ` which this build's vocabulary of ${KNOWN_EVENT_TYPES.size} types does not declare and whose envelope`
@@ -146,7 +182,63 @@ export function apply(ctx: Context): void {
       + ' yourself through ctx.sessionPersistence.open(id, \'write\') with `ignorable: true`'
       + ' (buildExternalEvent() builds it), or keep the payload out of the session log.',
     )
-  })
+  }
+
+  /**
+   * Report a committed message whose `source` the V4 row admission refuses.
+   *
+   * This runs on the committed event — before the durable write reaches the
+   * admission — and it is the only place that can attribute the refusal: the
+   * sentence the admission throws names no event, no sequence and no plugin.
+   * @param session - the session the event was committed to.
+   * @param event - the committed event.
+   */
+  function noteRefusedSources(session: { id: string }, event: { type?: unknown, seq?: unknown, data?: unknown }): void {
+    const offences = scanEventSources(event)
+    if (offences.length === 0) return
+    const offenceList = ledgerFor(sourceLedger, session.id)
+    for (const offence of offences) {
+      const key = [offence.eventType, offence.slot, offence.defect, offence.plugin ?? offence.kind ?? ''].join('\u0000')
+      const existing = offenceList.get(key)
+      if (existing !== undefined) {
+        existing.count += 1
+        continue
+      }
+      if (offenceList.size >= LEDGER_LIMIT) continue
+      offenceList.set(key, { ...offence, count: 1 })
+      const where = `${offence.eventType} at seq ${offence.seq ?? '?'} slot ${offence.slot}`
+      const who = offence.plugin === undefined ? '' : ` written by plugin "${offence.plugin}"`
+      const fix = offence.fix === undefined
+        ? ' Name the producer: any non-empty `source.kind` other than the literal \'plugin\' is admitted.'
+        : ` Write ${JSON.stringify(offence.fix.source)} instead.`
+      ctx.logger.warn(
+        `session-event-guard: session "${session.id}" committed ${where}${who} whose \`source.kind\` is`
+        + ` ${offence.kind === undefined ? 'absent or not a string' : JSON.stringify(offence.kind)}`
+        + ` (${offence.defect}). Session format V4 retired the anonymous \`kind: 'plugin'\` wrapper, and the`
+        + ' row admission refuses this message when the append reaches storage — with one sentence that names'
+        + ` neither the event nor the plugin.${fix}`,
+      )
+    }
+  }
+
+  /**
+   * The per-session offence map, bounded by the exported ledger sizes.
+   *
+   * Both ledgers go through here so neither can be the one that grows without
+   * bound: the ceiling is the same constant for both, and an eviction drops the
+   * oldest session rather than the newest offence.
+   * @param ledger - the ledger to index.
+   * @param id - the session id.
+   * @returns the session's map, created when it did not exist.
+   */
+  function ledgerFor<T extends { count: number }>(ledger: Map<string, Map<string, T>>, id: string): Map<string, T> {
+    const existing = ledger.get(id)
+    if (existing !== undefined) return existing
+    if (ledger.size >= LEDGER_SESSIONS) ledger.delete(ledger.keys().next().value as string)
+    const created = new Map<string, T>()
+    ledger.set(id, created)
+    return created
+  }
 
   ctx.tools.register(defineTool({
     name: TOOL,
@@ -154,8 +246,10 @@ export function apply(ctx: Context): void {
       'Check whether a custom session event will survive a reader that does not load the plugin that wrote it,'
       + ' and audit stored sessions for events that already will not. Call this before writing your own event'
       + ' type into a session log (pass `type`), when a session fails to load or open after a plugin was'
-      + ' removed or an update changed the plugin set (pass `session`), or to survey the stored sessions this'
-      + ' process can see (pass neither). The write path matters: Session.append builds and freezes the'
+      + ' removed or an update changed the plugin set (pass `session`), when a turn dies with "format v4'
+      + ' message requires a producer-owned source kind" (read the live section of the report), or to survey'
+      + ' the stored sessions this process can see (pass neither). Call it before attaching a `source` to a'
+      + ' message too (pass `source` as JSON). The write path matters: Session.append builds and freezes the'
       + ' envelope itself and cannot mark an event ignorable, so any event type outside this harness\'s'
       + ' generated vocabulary written that way becomes a REQUIRED event and makes the log unreadable later.',
     parameters: {
@@ -164,6 +258,14 @@ export function apply(ctx: Context): void {
         description:
           'One event type a plugin intends to write, e.g. "filesnap/point". Judged before it is written,'
           + ' on both write paths. Needs no storage backend.',
+      },
+      source: {
+        type: 'string',
+        description:
+          'One `source` object a plugin intends to attach to a durable message, as JSON — e.g.'
+          + ' {"kind":"plugin","plugin":"my-plugin"}. Judged against the V4 producer-owned-source admission'
+          + ' before it is written, and the accepted replacement is printed when one can be derived.'
+          + ' Needs no storage backend.',
       },
       session: {
         type: 'string',
@@ -188,11 +290,15 @@ export function apply(ctx: Context): void {
           vocabularyVersion: { type: 'string', required: true },
           writeType: { type: 'string' },
           writeVerdict: { type: 'string' },
+          sourceKind: { type: 'string' },
+          sourceDefect: { type: 'string' },
+          sourceAdmitted: { type: 'boolean' },
           audited: { type: 'integer', required: true },
           total: { type: 'integer', required: true },
           refused: { type: 'integer', required: true },
           refusedSessions: { type: 'array', required: true, items: { type: 'string' } },
           liveTypes: { type: 'array', required: true, items: { type: 'string' } },
+          liveSources: { type: 'array', required: true, items: { type: 'string' } },
           report: { type: 'string', required: true },
         },
       },
@@ -204,6 +310,7 @@ export function apply(ctx: Context): void {
       const sections: string[] = []
       const modes: string[] = []
       let write: WriteVerdict | undefined
+      let source: SourceVerdict | undefined
       let audits: SessionAudit[] = []
       let total = 0
 
@@ -213,8 +320,14 @@ export function apply(ctx: Context): void {
         sections.push(renderWriteVerdict(write, vocabulary))
       }
 
+      if (args.source !== undefined) {
+        modes.push('source')
+        source = sourceVerdict(args.source)
+        sections.push(renderSourceVerdict(source))
+      }
+
       const persistence = ctx.get('sessionPersistence')
-      const wantsStorage = args.session !== undefined || write === undefined
+      const wantsStorage = args.session !== undefined || write === undefined && source === undefined
       if (wantsStorage && persistence === undefined) {
         modes.push('unavailable')
         sections.push([
@@ -246,17 +359,29 @@ export function apply(ctx: Context): void {
       }))
       sections.push(renderLive(live))
 
+      const liveSources = [...sourceLedger.entries()].map(([id, offences]) => ({
+        id,
+        offences: [...offences.values()],
+      }))
+      sections.push(renderLiveSources(liveSources))
+
       const refused = audits.filter(audit => !audit.loadable)
       return {
         mode: modes.join('+'),
         vocabularySize: vocabulary.size,
         vocabularyVersion: vocabulary.version,
         ...write === undefined ? {} : { writeType: write.type, writeVerdict: write.verdict },
+        ...source === undefined ? {} : {
+          sourceKind: source.inspection.kind ?? '',
+          sourceDefect: source.inspection.defect ?? '',
+          sourceAdmitted: source.admitted,
+        },
         audited: audits.length,
         total,
         refused: refused.length,
         refusedSessions: refused.map(audit => audit.id),
         liveTypes: live.flatMap(entry => entry.offences.map(offence => offence.type)),
+        liveSources: liveSources.flatMap(entry => entry.offences.map(offence => `${offence.eventType}@${offence.seq ?? '?'}:${offence.slot}:${offence.defect}`)),
         report: sections.join('\n\n'),
       }
     },

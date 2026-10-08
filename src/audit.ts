@@ -33,6 +33,19 @@ export interface ExternalEventRecord {
 /** Why a stored session could not be read. */
 export type AuditFailure = 'refused' | 'missing' | 'unreadable'
 
+/**
+ * Which fail-closed contract the reader refused the log under, when its own
+ * message identifies it.
+ *
+ * The distinction is not cosmetic. The unknown-event refusal names the type and
+ * the sequence it stopped at; the retired-source-kind refusal does not name
+ * anything, because it is raised while decoding a physical row and the row
+ * carries no such context. An audit that presented both as "refused" would
+ * leave the reader of the report with the second kind of dead end the plugin
+ * exists to remove.
+ */
+export type AuditCause = 'unknown-required-event' | 'retired-source-kind'
+
 /** What one stored session looks like through the public read seam. */
 export interface SessionAudit {
   id: string
@@ -44,6 +57,8 @@ export interface SessionAudit {
   refusal?: string
   /** The refusal's error class name. */
   refusalName?: string
+  /** Which fail-closed contract refused it, when the message says. */
+  cause?: AuditCause
   /** Events in the loaded log; `0` when nothing loaded. */
   events: number
   /** Counts over the loaded log, by standing. */
@@ -81,6 +96,7 @@ export async function auditStoredSession(persistence: SessionPersistence, id: Se
       failure: failureOf(error),
       refusalName: nameOf(error),
       refusal: messageOf(error),
+      ...diagnosisOf(error),
       ...empty,
       ...sizeBytes === undefined ? {} : { sizeBytes },
     }
@@ -116,6 +132,7 @@ export async function auditStoredSession(persistence: SessionPersistence, id: Se
       failure: failureOf(error),
       refusalName: nameOf(error),
       refusal: messageOf(error),
+      ...diagnosisOf(error),
       ...empty,
       truncated: true,
       ...sizeBytes === undefined ? {} : { sizeBytes },
@@ -147,9 +164,28 @@ export async function auditStore(
 /** Classify a read failure without inspecting anything but its shape. */
 function failureOf(error: unknown): AuditFailure {
   if (error instanceof Error && /not found|ENOENT/i.test(`${error.name} ${error.message}`)) return 'missing'
-  return error instanceof Error && /ignorable|unknown to this harness/i.test(error.message)
-    ? 'refused'
-    : 'unreadable'
+  return causeOf(error) === undefined ? 'unreadable' : 'refused'
+}
+
+/**
+ * Which fail-closed contract a reader's own message identifies.
+ *
+ * Both messages are contract text from the harness, so this reads them rather
+ * than predicting them — the same rule the audit follows for the refusal
+ * itself.
+ * @param error - the error the read seam raised.
+ * @returns the cause, or `undefined` when the message identifies no known one.
+ */
+export function causeOf(error: unknown): AuditCause | undefined {
+  if (!(error instanceof Error)) return undefined
+  if (/producer-owned source kind/i.test(error.message)) return 'retired-source-kind'
+  return /ignorable|unknown to this harness/i.test(error.message) ? 'unknown-required-event' : undefined
+}
+
+/** The cause, as a spreadable field, so an absent cause stays absent. */
+function diagnosisOf(error: unknown): { cause?: AuditCause } {
+  const cause = causeOf(error)
+  return cause === undefined ? {} : { cause }
 }
 
 /** The error class name, for disclosure. */

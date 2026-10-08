@@ -28,6 +28,7 @@
 
 import { KNOWN_EVENT_TYPES, standingOf } from './vocabulary.ts'
 import type { EventStanding } from './vocabulary.ts'
+import { MESSAGE_SLOTS, slotLabel } from './source-kind.ts'
 
 /** What a plugin's intended write will do, and what to do about it. */
 export interface WriteVerdict {
@@ -35,6 +36,12 @@ export interface WriteVerdict {
   type: string
   /** Whether this build's generated vocabulary declares the type. */
   inVocabulary: boolean
+  /**
+   * The payload slots this event type declares for durable messages, when it
+   * declares any. Each one is admitted separately, by `source.kind`, and a
+   * second verdict judges that field (`sourceVerdict`).
+   */
+  sourceSlots: string[]
   /** The standing of the envelope `Session.append(type, data)` builds. */
   natural: EventStanding
   /**
@@ -59,6 +66,7 @@ export interface WriteVerdict {
  */
 export function writeVerdict(type: string): WriteVerdict {
   const inVocabulary = KNOWN_EVENT_TYPES.has(type)
+  const sourceSlots = MESSAGE_SLOTS.filter(slot => slot.type === type).map(slot => slotLabel(slot))
   // `Session.append` freezes `{ type, seq, time, data, ...surfaceMetadata }`;
   // there is no marker to read, so the envelope is judged as it is built.
   const natural = standingOf(type)
@@ -67,6 +75,7 @@ export function writeVerdict(type: string): WriteVerdict {
     return {
       type,
       inVocabulary,
+      sourceSlots,
       natural,
       appendCanMarkOmittable: false,
       seam,
@@ -80,6 +89,7 @@ export function writeVerdict(type: string): WriteVerdict {
   return {
     type,
     inVocabulary,
+    sourceSlots,
     natural,
     appendCanMarkOmittable: false,
     seam,

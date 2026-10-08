@@ -11,8 +11,16 @@ ignorable; refusing to interpret the log — it was likely written by a newer ha
 This plugin diagnoses that mistake at the write boundary, audits stored sessions for it through the
 same read seam a restart uses, and builds the envelope the public handle seam accepts.
 
+It answers a second mistake of the same shape with the opposite failure distance — a message whose
+`source` still uses the anonymous `kind: 'plugin'` wrapper that session format V4 retired. That one
+does not wait for a cold load; it stops the durable write that carries it, and the sentence it throws
+names neither the event nor the plugin. The plugin locates it: event type, sequence, payload slot,
+producer, and the exact replacement.
+
 Origin: [deepseek-ai/deepseek-harness discussion #8233](https://github.com/deepseek-ai/deepseek-harness/discussions/8233),
-from the author of `dsh-filesnap`, which reported it after hitting it in practice.
+from the author of `dsh-filesnap`, which reported it after hitting it in practice; and
+[discussion #8432](https://github.com/deepseek-ai/deepseek-harness/discussions/8432), which reported
+the retired source kind from `dsh-hindsight-memory`.
 
 Mount it:
 
@@ -21,7 +29,7 @@ Mount it:
   name: '@argszero/cordis-plugin-session-event-guard'
 ```
 
-Published as `@argszero/cordis-plugin-session-event-guard@0.1.0`.
+Published as `@argszero/cordis-plugin-session-event-guard@0.2.0`.
 
 ## The gap, exactly
 
@@ -65,12 +73,17 @@ instead of at restart. This package supplies both, from outside core, over publi
 
 ## What it provides
 
-- **`session_event_guard` tool** — a write-boundary verdict for a type name (`type`), an audit of one
-  stored session (`session`), or a sweep of the store (neither).
-- **A live observer** on `session/event`, so a session that appends an undeclared type is reported in
-  the process that did it, with the type and the sequence.
+- **`session_event_guard` tool** — a write-boundary verdict for a type name (`type`), a verdict on a
+  `source` object (`source`, as JSON), an audit of one stored session (`session`), or a sweep of the
+  store (neither).
+- **A live observer** on `session/event`, so a session that appends an undeclared type — or commits a
+  message whose `source` the V4 row admission will refuse — is reported in the process that did it,
+  with the type, the sequence and the payload slot.
 - **`buildExternalEvent({ type, data, seq, at? })`** — the envelope the handle seam accepts, with the
   four refusals a hand-rolled one gets wrong.
+- **Source judgements** — `inspectSource`, `replacementFor`, `scanEventSources` and `sourceVerdict`,
+  plus the `MESSAGE_SLOTS` table and `walkMessageSlots` they are built on, for callers that want the
+  answer without the tool.
 
 ### The verdict
 
@@ -116,7 +129,104 @@ type to `` `plugin:${type}` `` (`packages/session/session-format-v3-to-v4/src/ex
 exported from the package root, so the suite measures the condition it tests
 (`RELEASED_V3_EVENT_TYPES` contains neither the type nor any `plugin:` entry) rather than the rewrite.
 
-## What it does not do, and what it cannot see
+## The second mistake: a message source V4 will not admit
+
+Session format V4 replaced the anonymous `kind: 'plugin'` wrapper with producer-owned attribution.
+The literal `'plugin'` is **retired syntax**, and the admission that refuses it sits at the physical
+row boundary, so it lands synchronously on the append that carries the message
+(`packages/session/session-format-v3-to-v4/src/codec.ts` → `assertV4RowAdmission` →
+`assertV4SourceRowAdmission`). What it throws is one fixed sentence:
+
+```
+format v4 message requires a producer-owned source kind
+```
+
+That sentence names no event, no sequence, no payload slot and no plugin. A plugin author whose turn
+dies on it has to bisect their own plugin set to find out which message the harness meant.
+
+**The rule is not a whitelist.** `source()` in
+`packages/session/session-format-v3-to-v4/src/message-sources.ts` refuses exactly four things: a
+`source` that is not an object, a `kind` that is not a string, a `kind` that is empty, and a `kind`
+that is the literal `'plugin'`. Any other non-empty string is admitted, which is why a first-party
+plugin never has to register its name anywhere. `plugin:<name>` is not the rule either — it is the
+value the harness's own V3→V4 rewrite derives for a name it did not release
+(`producerKind` in `sources.ts` falls back to `` `plugin:${plugin}` ``), so it is the *replacement
+this plugin suggests*, not a format requirement.
+
+`{"kind":"plugin","plugin":"my-plugin"}` is the shape that breaks. The replacement is
+`{"kind":"plugin:my-plugin"}` — the same source with `kind` set and `plugin` dropped, exactly as
+`rewritePluginSource` builds it.
+
+### What the plugin says, and where
+
+The live observer runs on the committed event — before the durable write reaches the admission — so it
+is the only vantage point that can attribute the refusal. Given a session that commits
+
+```js
+session.append('user/message', {
+  role: 'user',
+  content: [{ type: 'text', text: 'hello' }],
+  source: { kind: 'plugin', plugin: 'hindsight-memory', form: 'snapshot' },
+})
+```
+
+the append itself **succeeds** (the event is in the live log, seq 0), and the plugin logs:
+
+```
+session-event-guard: session "live-source" committed user/message at seq 0 slot data written by plugin
+"hindsight-memory" whose `source.kind` is "plugin" (kind-retired). Session format V4 retired the
+anonymous `kind: 'plugin'` wrapper, and the row admission refuses this message when the append reaches
+storage — with one sentence that names neither the event nor the plugin.
+Write {"kind":"plugin:hindsight-memory","form":"snapshot"} instead.
+```
+
+The same ledger is in the tool's report, with the sequence and the slot:
+
+```
+Live source admission — messages the V4 write path will refuse, located:
+
+  session live-source
+    seq 0  user/message  data  kind-retired  plugin="hindsight-memory"
+      write instead: {"kind":"plugin:hindsight-memory","form":"snapshot"}
+```
+
+And the pre-attach arm judges a `source` before anything carries it —
+`session_event_guard({ source: '{"kind":"plugin","plugin":"x"}' })` — which is the cheapest place to
+ask, because it needs no session and no write.
+
+### Which slots are walked, and one asymmetry
+
+A message lives in a declared slot of a durable event, and the walk mirrors the harness's own
+(`mapEventMessages`): `user/message`'s payload *is* the message; `developer/message`,
+`system/message`, `assistant/message` and `tool/result` carry it at `data.message`;
+`agent/inbox/spliced` at `data.inserted[]`; `session/title-llm-request` at `data.messages[]`.
+
+The two admission paths are not identical, and flattening the difference would misreport where a
+refusal comes from. The **adoption** walk (`assertV4MessageSources`) requires a producer-owned kind on
+every one of those slots, `developer/message` included. The **row** walk
+(`assertV4SourceRowAdmission`) re-checks only `user/message`, `system/message`, `assistant/message`,
+`tool/result`, `agent/inbox/spliced` and `session/title-llm-request`; a retired `developer/message`
+source is refused by that event's own row validator instead, with a sentence of its own that also
+names `id`, `role` and `content`. Both refuse it. The suite pins both sentences so a future build
+cannot move one without the claim failing here.
+
+`MESSAGE_SLOTS` is a mirror of a walk that is not exported, so it is measured rather than trusted:
+every entry has a fixture in `test/source-kind.spec.mjs`, and each fixture asserts that a payload with
+a producer-owned kind is **admitted** by the real `assertV4RowAdmission` before asserting that the
+same payload with the retired wrapper is refused. The control is what makes the arm mean something —
+several of these events carry their own row checks (a positive `turn`, a `step`, a first-class tool
+message), and a fixture that got one of those wrong would throw for the wrong reason.
+
+### Repair is a value, not a rewrite
+
+`replacementFor` and `sourceVerdict` **compute** the admitted source; they do not apply it. That is
+deliberate. The event in the live log is `deepFreeze`d and is the same object every in-memory reader
+sees, so a plugin that rewrote a retired `kind` on the way to storage would leave the process holding
+`plugin` while the file holds `plugin:<name>` — a representation split that is worse than the mistake
+it hides, because it is invisible from both sides. The plugin therefore never writes to a session log
+and never edits an event; it hands the caller the exact object to write instead.
+
+
 
 - **It does not write to any session log.** Not its own events, not yours. The helper builds an object;
   the caller appends it.
@@ -126,6 +236,11 @@ exported from the package root, so the suite measures the condition it tests
 - **The live observer sees `Session.append` writes only.** An event written through the handle seam is
   omittable by construction and never re-emits as `session/event`, so it is invisible here. That is the
   safe path, not a blind spot — but it does mean a clean ledger is not proof that a session is clean.
+  A retired `source.kind` written through the handle seam throws synchronously at `handle.append`, so
+  it is loud without this plugin; the same mistake through `Session.append` is the one only this
+  plugin can name, and it is the one the ledger covers.
+- **The source arm judges, it does not repair.** See above: it computes the admitted object and states
+  it. Nothing here mutates a frozen event, and nothing here writes to a log.
 - **A refused log is enumerated only up to its first offender.** The reader stops there, so the audit
   reports one located refusal and says the count is a lower bound instead of presenting what it can see
   as what exists.
@@ -166,13 +281,17 @@ package's.
 The suite runs against the **real** JSONL backend, the real session store and the real
 `dsh-session`, and one arm executes a reader **in a separate process that does not import this
 plugin** (`test/reader.mjs`) — the scenario the package is about, run rather than described.
+`@deepseek-ai/dsh-session-format-v3-to-v4` is a `devDependency` and is imported by the suite only:
+`test/source-kind.spec.mjs` runs the real `assertV4RowAdmission` against every slot `MESSAGE_SLOTS`
+claims, so the mirror this package walks is checked by the harness's own walk instead of by a second
+hand-written copy of it. Nothing in `src/` imports it.
 `@deepseek-ai/dsh-scope` appears in `devDependencies` only because `dsh-session`'s published metadata
 does not declare it while its build imports it; nothing here imports it.
 
 ### What the suite is worth
 
-`scripts/inject-defects.mjs` removes one distinction at a time — 42 arms, each a defect this package
-could plausibly have shipped — rebuilds, and requires the suite to notice. **41 are caught and one is
+`scripts/inject-defects.mjs` removes one distinction at a time — 60 arms, each a defect this package
+could plausibly have shipped — rebuilds, and requires the suite to notice. **59 are caught and one is
 a declared equivalent**: copying the payload through a JSON round trip is provably the identity on
 the domain `buildExternalEvent` accepts, because the payload validator has already refused every
 value a round trip would change. An arm whose mutation leaves the suite green is reported as SILENT
@@ -180,6 +299,13 @@ and fails the harness rather than being dropped, so the number is a measurement 
 a claim about it. The arms found four real gaps while this was being written, and each is now an
 assertion (the report's two write-path rows, the sequence the live ledger reports, both ledger bounds
 and the mid-enumeration failure path).
+
+An arm whose mutation no longer applies is reported as **NO-OP**, and that is not a formality either:
+adding this release's surface moved the ledger into a shared helper, and five arms silently stopped
+matching the code they were supposed to mutate. The harness said so — `NO-OP`, five times — where a
+`green` suite would not have. Their `edits` were repointed at the new source and all five are caught
+again. A mutation harness that only reports SILENT is half a harness; the other half is noticing that
+it stopped mutating anything.
 
 ## Development
 

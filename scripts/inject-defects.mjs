@@ -187,7 +187,7 @@ const MUTATIONS = [
     name: 'audit: a refusal is reported as a generic read failure',
     file: 'src/audit.ts',
     edits: [[
-      "  return error instanceof Error && /ignorable|unknown to this harness/i.test(error.message)\n    ? 'refused'\n    : 'unreadable'",
+      "  return causeOf(error) === undefined ? 'unreadable' : 'refused'",
       "  return 'unreadable'",
     ]],
   },
@@ -240,7 +240,7 @@ const MUTATIONS = [
   {
     name: 'report: a truncated enumeration is presented as the whole log',
     file: 'src/report.ts',
-    edits: [['  if (audit.truncated) {', '  if (false) {']],
+    edits: [['  } else if (audit.truncated) {', '  } else if (false) {']],
   },
   {
     name: 'report: the sessions that were not opened are not disclosed',
@@ -260,7 +260,7 @@ const MUTATIONS = [
   {
     name: 'guard: the first offending sequence is always reported as zero',
     file: 'src/index.ts',
-    edits: [['offences.set(event.type, { type: event.type, firstSeq: event.seq, count: 1 })', 'offences.set(event.type, { type: event.type, firstSeq: 0, count: 1 })']],
+    edits: [['    offenceList.set(event.type, {\n      type: event.type, firstSeq: event.seq, count: 1,\n    })', '    offenceList.set(event.type, {\n      type: event.type, firstSeq: 0, count: 1,\n    })']],
   },
   {
     name: 'guard: a repeated offence is not counted',
@@ -270,12 +270,12 @@ const MUTATIONS = [
   {
     name: 'guard: one session may grow the ledger without bound',
     file: 'src/index.ts',
-    edits: [['    if (offences.size >= LEDGER_LIMIT) return\n', '']],
+    edits: [['    if (offenceList.size >= LEDGER_LIMIT) return\n', '']],
   },
   {
     name: 'guard: the ledger keeps every session it has ever seen',
     file: 'src/index.ts',
-    edits: [['      if (ledger.size >= LEDGER_SESSIONS) ledger.delete(ledger.keys().next().value as string)\n', '']],
+    edits: [['    if (ledger.size >= LEDGER_SESSIONS) ledger.delete(ledger.keys().next().value as string)\n', '']],
   },
   {
     name: 'guard: a preflight alone is turned into a storage sweep',
@@ -296,6 +296,119 @@ const MUTATIONS = [
     name: 'guard: a process with no backend is not told so',
     file: 'src/index.ts',
     edits: [['      if (wantsStorage && persistence === undefined) {', '      if (false) {']],
+  },
+  {
+    // The retired literal is the whole point of the second surface: an arm that
+    // reads it as an ordinary kind is the defect this module exists to catch,
+    // and the suite must notice that the harness's own admission still refuses.
+    name: 'source-kind: the retired literal is read as an ordinary kind',
+    file: 'src/source-kind.ts',
+    edits: [["  if (kind === 'plugin') return { defect: 'kind-retired', kind, ...carried }\n", '']],
+  },
+  {
+    name: 'source-kind: an empty kind is admitted',
+    file: 'src/source-kind.ts',
+    edits: [['  if (kind.length === 0) return { defect: \'kind-empty\', kind, ...carried }\n', '']],
+  },
+  {
+    name: 'source-kind: a non-string kind is admitted',
+    file: 'src/source-kind.ts',
+    edits: [["  if (typeof kind !== 'string') return { defect: 'kind-not-string', ...carried }",
+      "  if (typeof kind !== 'string') return { kind: String(kind), ...carried }"]],
+  },
+  {
+    name: 'source-kind: a missing kind is admitted',
+    file: 'src/source-kind.ts',
+    edits: [[
+      "  if (kind === undefined) return { defect: 'kind-missing', ...carried }\n"
+      + "  if (typeof kind !== 'string') return { defect: 'kind-not-string', ...carried }\n"
+      + "  if (kind.length === 0) return { defect: 'kind-empty', kind, ...carried }\n",
+      "  if (typeof kind !== 'string' || kind.length === 0) return { kind: '', ...carried }\n",
+    ]],
+  },
+  {
+    name: 'source-kind: a source that is not an object is admitted',
+    file: 'src/source-kind.ts',
+    edits: [["  if (!isJsonObject(source)) return { defect: 'not-object' }",
+      "  if (!isJsonObject(source)) return {}"]],
+  },
+  {
+    name: 'source-kind: an absent source is admitted',
+    file: 'src/source-kind.ts',
+    edits: [["  if (source === undefined) return { defect: 'absent' }\n", '']],
+  },
+  {
+    name: 'source-kind: the replacement keeps the retired plugin field',
+    file: 'src/source-kind.ts',
+    edits: [[
+      "    ? Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'kind' && key !== 'plugin'))",
+      "    ? Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'kind'))",
+    ]],
+  },
+  {
+    name: 'source-kind: a retired wrapper with no producer name still yields a replacement',
+    file: 'src/source-kind.ts',
+    edits: [['  if (plugin === undefined || plugin.length === 0) return undefined', '  if (plugin === undefined) return undefined']],
+  },
+  {
+    name: 'source-kind: the replacement is suggested for clauses other than the retired literal',
+    file: 'src/source-kind.ts',
+    edits: [[
+      "  if (inspection.defect !== 'kind-retired') return undefined",
+      "  if (inspection.defect === undefined) return undefined",
+    ]],
+  },
+  {
+    name: 'source-kind: a declared message slot is dropped from the table',
+    file: 'src/source-kind.ts',
+    edits: [["  { type: 'developer/message', at: 'message', many: false },\n", '']],
+  },
+  {
+    name: 'source-kind: a non-object array entry is reported as a source defect',
+    file: 'src/source-kind.ts',
+    edits: [[
+      '  held.forEach((message, index) => {\n    if (isJsonObject(message)) visit(`data.${spec.at}[${index}]`, message)\n  })',
+      '  held.forEach((message, index) => {\n    visit(`data.${spec.at}[${index}]`, message)\n  })',
+    ]],
+  },
+  {
+    name: 'source-kind: a message slot that is absent is reported as an offence',
+    file: 'src/source-kind.ts',
+    edits: [["    if (isJsonObject(data)) visit('data', data)\n", "    visit('data', data)\n"]],
+  },
+  {
+    name: 'source-kind: an event with no sequence is given one',
+    file: 'src/source-kind.ts',
+    edits: [["  const seq = typeof event.seq === 'number' ? event.seq : undefined",
+      "  const seq = typeof event.seq === 'number' ? event.seq : 0"]],
+  },
+  {
+    name: 'source-kind: an argument that did not parse is judged admitted',
+    file: 'src/source-kind.ts',
+    edits: [['      parsed: false,\n      inspection: {},\n      admitted: false,', '      parsed: false,\n      inspection: {},\n      admitted: true,']],
+  },
+  {
+    name: 'report: a refused source is rendered as ADMITTED',
+    file: 'src/report.ts',
+    edits: [[
+      "    verdict.admitted\n      ? 'Verdict: ADMITTED — the V4 row admission accepts this source as written.'",
+      "    true\n      ? 'Verdict: ADMITTED — the V4 row admission accepts this source as written.'",
+    ]],
+  },
+  {
+    name: 'guard: committed messages are never judged against the source admission',
+    file: 'src/index.ts',
+    edits: [['    noteRefusedSources(session, event)\n', '']],
+  },
+  {
+    name: 'guard: every committed message is reported as a source offence',
+    file: 'src/index.ts',
+    edits: [['    if (offences.length === 0) return\n', '']],
+  },
+  {
+    name: 'guard: the source arm ignores the caller\'s argument',
+    file: 'src/index.ts',
+    edits: [['        source = sourceVerdict(args.source)', '        source = sourceVerdict(\'{"kind":"plugin:ok"}\')']],
   },
 ]
 
