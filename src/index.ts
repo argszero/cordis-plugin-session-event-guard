@@ -20,7 +20,8 @@
  * plugin composition of whoever happens to read.
  *
  * This package does not change the core contract and does not write to any
- * session log. It supplies what is missing around it:
+ * session log — it refuses a write rather than performing one. It supplies what
+ * is missing around it:
  *
  * - a **write-boundary verdict** for a type name, stating both write paths and
  *   the one thing `Session.append` cannot do;
@@ -30,6 +31,10 @@
  * - a **live observer** on `session/event`, so the mistake is reported in the
  *   process that made it, with the type and sequence, rather than discovered
  *   on the next cold load;
+ * - a **write-side veto** that shadows each session's `append` and refuses a
+ *   payload no reader would accept before it lands, quoting the reader's own
+ *   sentence — the second half of the same problem, where `Session.append`
+ *   checks the envelope but not the message shape;
  * - **`buildExternalEvent`**, the envelope the handle seam accepts, with the
  *   four refusals a hand-rolled one gets wrong.
  *
@@ -51,6 +56,8 @@ import { renderLiveSources, renderSourceVerdict, renderStoreAudit, renderWriteVe
 import { scanEventSources, sourceVerdict } from './source-kind.ts'
 import type { SourceOffence, SourceVerdict } from './source-kind.ts'
 import { KNOWN_EVENT_TYPES, standingOf, vocabularyReport } from './vocabulary.ts'
+import { installWriteVeto } from './veto.ts'
+import type { VetoMode, VetoRefusal } from './veto.ts'
 
 export { auditStore, auditStoredSession, causeOf } from './audit.ts'
 export type { AuditCause, AuditFailure, ExternalEventRecord, SessionAudit } from './audit.ts'
@@ -69,9 +76,21 @@ export type {
 } from './source-kind.ts'
 export { KNOWN_EVENT_TYPES, standingOf, vocabularyReport } from './vocabulary.ts'
 export type { EventStanding, VocabularyReport } from './vocabulary.ts'
+export { installWriteVeto, refusalFor, SENTINEL_SEQ, VETO_MARK } from './veto.ts'
+export type { VetoHandle, VetoMode, VetoOutcome, VetoRefusal } from './veto.ts'
 
 export const name = 'session-event-guard'
 export const inject = ['tools']
+
+/**
+ * How the write-side veto treats an event the reader would refuse.
+ *
+ * `refuse` throws at the append site, before the event lands, which is what
+ * keeps the log readable. `observe` reports and lets it commit — the shape an
+ * operator needs when the goal is to see the real failure on a live session
+ * rather than to keep it clean.
+ */
+export const VETO_MODE: VetoMode = 'refuse'
 
 /** Tool name the model calls. */
 export const TOOL = 'session_event_guard'
@@ -103,6 +122,16 @@ export interface LiveOffence {
  */
 export interface LiveSourceOffence extends SourceOffence {
   /** How many times this exact offence was seen. */
+  count: number
+}
+
+/** One append the veto stopped, or — in `observe` mode — only reported. */
+export interface LiveRefusal {
+  /** Event type the caller tried to append. */
+  type: string
+  /** The reader's sentence, quoted from the package's own validator. */
+  sentence: string
+  /** How many times this exact type was refused. */
   count: number
 }
 
@@ -150,6 +179,47 @@ export interface GuardToolValue {
 export function apply(ctx: Context): void {
   const ledger = new Map<string, Map<string, LiveOffence>>()
   const sourceLedger = new Map<string, Map<string, LiveSourceOffence>>()
+  const refused = new Map<string, Map<string, LiveRefusal>>()
+
+  // The write-side veto. `Session.append` checks the envelope and the surface
+  // marker but never the message shape, so a payload no reader will accept
+  // lands here first. Shadowing the instance's own `append` is the only seam
+  // that sees the event before it is durable.
+  const vetoes = new Set<() => void>()
+  ctx.effect(() => () => {
+    for (const restore of vetoes) restore()
+    vetoes.clear()
+  })
+  ctx.on('session/created', (session) => {
+    const handle = installWriteVeto(session, {
+      mode: VETO_MODE,
+      onRefusal: (refusal) => noteRefusal(session, refusal),
+    })
+    if (handle.outcome === 'patched') vetoes.add(handle.restore)
+  })
+
+  /**
+   * Record one append the veto stopped, bounded like the other two ledgers.
+   * @param session - the session the append was refused on.
+   * @param refusal - the type and the reader's sentence.
+   */
+  function noteRefusal(session: { id: string }, refusal: VetoRefusal): void {
+    const offenceList = ledgerFor(refused, session.id)
+    const existing = offenceList.get(refusal.type)
+    if (existing !== undefined) {
+      existing.count += 1
+      return
+    }
+    if (offenceList.size >= LEDGER_LIMIT) return
+    offenceList.set(refusal.type, { type: refusal.type, sentence: refusal.sentence, count: 1 })
+    ctx.logger.warn(
+      `session-event-guard: session "${session.id}" refused an append of "${refusal.type}" at the write`
+      + ` boundary (${VETO_MODE} mode): ${refusal.sentence}.`
+      + (VETO_MODE === 'refuse'
+        ? ' The event was not committed, so this log stays readable by every reader.'
+        : ' The event was committed anyway: a reader without this plugin must still refuse this log.'),
+    )
+  }
 
   ctx.on('session/event', (session, event) => {
     noteUndeclaredType(session, event)

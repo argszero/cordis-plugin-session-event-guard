@@ -17,7 +17,7 @@
  */
 
 import { Context } from '@deepseek-ai/cordis'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlModule from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionId } from '@deepseek-ai/dsh-session'
 
 const [root, id] = process.argv.slice(2)
@@ -27,7 +27,7 @@ if (root === undefined || id === undefined) {
 }
 
 const ctx = new Context()
-await ctx.plugin(Jsonl, { root, compression: 'none' })
+await ctx.plugin({ name: JsonlModule.name, Config: JsonlModule.Config, apply: JsonlModule.apply }, { root, compression: 'none' })
 const persistence = ctx.get('sessionPersistence')
 const handle = await persistence.open(SessionId(id), 'read')
 try {

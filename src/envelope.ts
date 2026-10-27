@@ -20,7 +20,7 @@ import { KNOWN_EVENT_TYPES } from './vocabulary.ts'
 /** A refusal this package raises before a bad event can reach storage. */
 export class SessionEventGuardError extends Error {
   /** Stable machine-routable code. */
-  readonly code: 'KNOWN_TYPE' | 'PREFIXED_TYPE' | 'UNNAMESPACED_TYPE' | 'NOT_JSON'
+  readonly code: 'KNOWN_TYPE' | 'PREFIXED_TYPE' | 'UNNAMESPACED_TYPE' | 'NOT_JSON' | 'READER_REFUSED'
   constructor(code: SessionEventGuardError['code'], message: string) {
     super(message)
     this.name = 'SessionEventGuardError'

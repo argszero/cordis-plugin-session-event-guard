@@ -43,7 +43,17 @@ const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
  * published, so the list is the contract, not the manifest — every entry was
  * probed (`npm run test:probe-lines`) for the version that claims it.
  */
-const SUPPORTED_LINES = ['0.1.7-alpha.1', '0.1.7-rc.2', '0.2.0-rc.2']
+const SUPPORTED_LINES = ['0.2.1-rc.3']
+
+/**
+ * Lines the range must keep refusing.
+ *
+ * `0.2.0` is the previous line, which the write-side veto was never run
+ * against; `0.2.1` is the final release of the line being measured, and a
+ * prerelease-measured package that silently admits its final release is
+ * claiming a run that has not happened yet.
+ */
+const REFUSED_LINES = ['0.2.0', '0.2.1']
 
 /** Every file under `dir` whose name ends with one of `extensions`. */
 function walk(dir, extensions, found = []) {
@@ -138,7 +148,9 @@ test('every harness peer range admits exactly the lines this plugin claims, and 
     for (const line of SUPPORTED_LINES) {
       assert.ok(semver.satisfies(line, range), `the peer range for ${name} rejects ${line}, which the README claims`)
     }
-    assert.ok(!semver.satisfies('0.2.0', range), `the peer range for ${name} must not admit the next minor line`)
+    for (const line of REFUSED_LINES) {
+      assert.ok(!semver.satisfies(line, range), `the peer range for ${name} must not admit ${line}, which was never measured`)
+    }
   }
 })
 
@@ -149,7 +161,7 @@ test('the README quotes the range it is describing, in full', () => {
   for (const name of dshPeers) {
     assert.ok(readme.includes(manifest.peerDependencies[name]), `the README must quote the ${name} range verbatim`)
   }
-  for (const line of ['0.1.7', '0.2.0']) {
+  for (const line of ['0.2.1-rc.3']) {
     assert.ok(readme.includes(line), `the README must name the ${line} line it was verified against`)
   }
 })

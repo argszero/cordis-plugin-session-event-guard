@@ -29,7 +29,7 @@ Mount it:
   name: '@argszero/cordis-plugin-session-event-guard'
 ```
 
-Published as `@argszero/cordis-plugin-session-event-guard@0.2.0`.
+Published as `@argszero/cordis-plugin-session-event-guard@0.3.0`.
 
 ## The gap, exactly
 
@@ -79,6 +79,9 @@ instead of at restart. This package supplies both, from outside core, over publi
 - **A live observer** on `session/event`, so a session that appends an undeclared type — or commits a
   message whose `source` the V4 row admission will refuse — is reported in the process that did it,
   with the type, the sequence and the payload slot.
+- **A write-side veto** on `Session.append`, so a payload no reader would accept — a message whose
+  `content` is not a parts array, say — is refused at the append site instead of poisoning the log for
+  the next reader. See [the third mistake](#the-third-mistake-a-payload-the-reader-refuses-written-through-sessionappend).
 - **`buildExternalEvent({ type, data, seq, at? })`** — the envelope the handle seam accepts, with the
   four refusals a hand-rolled one gets wrong.
 - **Source judgements** — `inspectSource`, `replacementFor`, `scanEventSources` and `sourceVerdict`,
@@ -251,14 +254,85 @@ and never edits an event; it hands the caller the exact object to write instead.
 - **A store sweep opens the newest `limit` sessions** (default 20) and says how many it skipped; a
   clean result for the sessions it opened is not a clean store.
 
-## Compatibility
+## The third mistake: a payload the reader refuses, written through `Session.append`
 
-Compiled and tested against the harness `0.1.7` and `0.2.0` prerelease lines. Peer ranges, verbatim:
+The first two mistakes are about *which events* a log may hold. This one is about what an event
+*contains*, and it is the one the write path does not check at all.
+
+`Session.append` validates the envelope, the surface marker and the request-header rules. It calls
+`validateSessionEventData`, whose own doc comment says it "does not validate complete event payloads".
+The message-shape invariants — an identified message, a role, a `source`, and `content` as a parts
+array — live in `assertMessageEventShape` (`packages/core/session/src/index.ts`), which the append
+path never calls. So a message whose `content` is a string appends successfully, and the *reader*
+refuses the log later, in whatever process opens it next:
 
 ```
-@deepseek-ai/dsh-session                        >=0.1.7-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.2.0
-@deepseek-ai/dsh-session-persistence            >=0.1.7-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.2.0
-@deepseek-ai/dsh-tools                          >=0.1.7-alpha.1 <0.2.0 || >=0.2.0-rc.1 <0.2.0
+session event at seq 0 message has invalid content
+```
+
+That is the same failure distance as the vocabulary mistake, with the same consequence: the whole log
+is unreadable, not one event dropped, and the process that could have attributed it is long gone. Only
+the first mistake has a seam with a marker — this one has none.
+
+### The veto
+
+The reader's validator is module-private, but `adoptSessionEvent` is exported and runs all three
+validators. So the veto **asks the package** instead of duplicating its rules: it builds the envelope
+`append` is about to build, hands it to `adoptSessionEvent`, and refuses the append when that throws —
+quoting the reader's own sentence, not a paraphrase of it.
+
+```yaml
+- id: session-event-guard
+  name: '@argszero/cordis-plugin-session-event-guard'
+```
+
+Mounted, it shadows each session's `append` on the `session/created` hook. Two details make the oracle
+exact rather than approximate:
+
+- **The candidate is judged at a sentinel sequence** (`SENTINEL_SEQ`, `Number.MAX_SAFE_INTEGER`). Every
+  surface rule that mentions `seq` forbids something being *not earlier* than it, so one value larger
+  than any real sequence makes all of them pass for a legitimate event. Guessing the next sequence
+  instead would refuse a legitimate `replace` whose `startSeq` is below the guess.
+- **The payload is cloned first.** `adoptSessionEvent` deep-freezes what it accepts, and freezing the
+  caller's object on the way past would be this plugin mutating a value it was only asked to judge.
+
+A refusal is a throw at the append site:
+
+```
+SessionEventGuardError: refusing to append user/message to session "…": session event at seq
+9007199254740991 message has invalid content. This event was not committed. A reader that does not
+load this plugin would have refused the whole log later, in a process that could not attribute it.
+```
+
+Set `VETO_MODE = 'observe'` to report and commit anyway — the shape an operator needs to see the real
+failure on a live session rather than to keep it clean.
+
+### What the veto covers, and what it does not
+
+- **It prevents the malformed event from landing; it does not repair a log already poisoned.** Each
+  session's `append` is shadowed at `session/created`, so the refused event never reaches the durable
+  log and the next reader sees a log with no defect in it. A log poisoned *before* this plugin was
+  installed is untouched: for that, `session_event_guard` with `session` reports the reader's refusal,
+  and recovering the session is a separate operation this package does not perform.
+- **It covers sessions announced through `session/created`.** A session object obtained some other way
+  — constructed directly, or created before this plugin applied — is not shadowed. `installWriteVeto`
+  is exported for callers that hold such a session and want the same verdict; it reports `no-append`
+  or `not-writable` as an outcome rather than throwing into the lifecycle edge that delivered it.
+- **A payload `append` would itself refuse is left to `append`.** `BigInt`, a function, a cycle: those
+  are refused by the write path in every process with or without this plugin, and with a sentence that
+  names the real problem. Refusing them here first would pre-empt that sentence and claim a durability
+  hazard that does not exist, so the veto stands back whenever its shape verdict would be the wrong
+  one. That check runs only on the failure path, so it costs nothing on a healthy append.
+- **It is a shadow, and shadows are reversible.** `restore()` unwinds it, and unwinds only a shadow
+  that is still its own — a later guard's `append` is left alone.
+
+
+Compiled and tested against the harness `0.2.1-rc.3` line. Peer ranges, verbatim:
+
+```
+@deepseek-ai/dsh-session                        >=0.2.1-rc.3 <0.2.1
+@deepseek-ai/dsh-session-persistence            >=0.2.1-rc.3 <0.2.1
+@deepseek-ai/dsh-tools                          >=0.2.1-rc.3 <0.2.1
 @deepseek-ai/cordis                             ^4.0.2
 ```
 
@@ -290,11 +364,14 @@ does not declare it while its build imports it; nothing here imports it.
 
 ### What the suite is worth
 
-`scripts/inject-defects.mjs` removes one distinction at a time — 60 arms, each a defect this package
-could plausibly have shipped — rebuilds, and requires the suite to notice. **59 are caught and one is
+`scripts/inject-defects.mjs` removes one distinction at a time — 66 arms, each a defect this package
+could plausibly have shipped — rebuilds, and requires the suite to notice. **65 are caught and one is
 a declared equivalent**: copying the payload through a JSON round trip is provably the identity on
 the domain `buildExternalEvent` accepts, because the payload validator has already refused every
-value a round trip would change. An arm whose mutation leaves the suite green is reported as SILENT
+value a round trip would change. Six of the arms cover the write-side veto, one per distinction it
+could get wrong: asking the reader and discarding the answer, judging at sequence zero instead of the
+sentinel, judging (and so freezing) the caller's own object, refusing in `observe` mode, unwinding
+over a later guard's shadow, and surviving the disposal of the plugin that installed it. An arm whose mutation leaves the suite green is reported as SILENT
 and fails the harness rather than being dropped, so the number is a measurement of the suite and not
 a claim about it. The arms found four real gaps while this was being written, and each is now an
 assertion (the report's two write-path rows, the sequence the live ledger reports, both ledger bounds

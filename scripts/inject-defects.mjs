@@ -410,6 +410,39 @@ const MUTATIONS = [
     file: 'src/index.ts',
     edits: [['        source = sourceVerdict(args.source)', '        source = sourceVerdict(\'{"kind":"plugin:ok"}\')']],
   },
+  {
+    name: 'veto: the reader is asked and its answer thrown away',
+    file: 'src/veto.ts',
+    edits: [[
+      "    if (!isJsonPayload(payload)) return undefined\n    return { type, sentence: error instanceof Error ? error.message : String(error) }",
+      '    return undefined',
+    ]],
+  },
+  {
+    name: 'veto: the candidate is judged at sequence zero, not at the sentinel',
+    file: 'src/veto.ts',
+    edits: [['export const SENTINEL_SEQ = Number.MAX_SAFE_INTEGER', 'export const SENTINEL_SEQ = 0']],
+  },
+  {
+    name: 'veto: the caller\'s payload is judged in place and frozen by the reader',
+    file: 'src/veto.ts',
+    edits: [['    payload = structuredClone(data)', '    payload = data']],
+  },
+  {
+    name: 'veto: observe mode refuses the append anyway',
+    file: 'src/veto.ts',
+    edits: [["        if (options.mode === 'refuse') {", '        if (true) {']],
+  },
+  {
+    name: 'veto: unwinding writes over a later guard\'s shadow',
+    file: 'src/veto.ts',
+    edits: [['      if ((session as { append?: unknown }).append !== wrapper) return\n', '']],
+  },
+  {
+    name: 'veto: disposal forgets the shadow it installed',
+    file: 'src/index.ts',
+    edits: [["    if (handle.outcome === 'patched') vetoes.add(handle.restore)", "    if (handle.outcome !== 'patched') vetoes.add(handle.restore)"]],
+  },
 ]
 
 const argv = process.argv.slice(2)

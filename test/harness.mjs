@@ -18,12 +18,26 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
-import systemPromptPlugin from '@deepseek-ai/dsh-system-prompt'
-import toolsPlugin from '@deepseek-ai/dsh-tools'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as systemPromptPlugin from '@deepseek-ai/dsh-system-prompt'
+import * as toolsPlugin from '@deepseek-ai/dsh-tools'
 import { SESSION_FORMAT_VERSION, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { materializeCreateHeader } from '@deepseek-ai/dsh-session-persistence'
 import * as plugin from '../lib/index.js'
+
+/**
+ * A module namespace is not always a cordis plugin: this line's packages split
+ * between a `default` plugin export and a `{ name, Config, apply }` module, and
+ * a bare namespace object is refused by the loader either way.
+ * @param ns - an imported `{ name, Config?, apply }` module.
+ * @returns a plugin object the loader accepts.
+ */
+export function asPlugin(ns) {
+  const fallback = ns.default
+  if (typeof fallback === 'function') return fallback
+  if (typeof fallback === 'object' && fallback !== null && typeof fallback.apply === 'function') return fallback
+  return { name: ns.name, Config: ns.Config, apply: ns.apply }
+}
 
 /** The tool name the model calls. */
 export const TOOL = 'session_event_guard'
@@ -49,13 +63,18 @@ export async function world(spec = {}) {
   const ctx = new Context()
   const logged = []
   ctx.logger.exporter({ levels: { default: 2 }, export: message => { logged.push(message) } })
-  await ctx.plugin(systemPromptPlugin, {})
-  await ctx.plugin(toolsPlugin)
+  await ctx.plugin(asPlugin(systemPromptPlugin), {})
+  await ctx.plugin(asPlugin(toolsPlugin))
   if (spec.sessions === true) await ctx.plugin(SessionStore)
-  if (spec.backend !== false) await ctx.plugin(Jsonl, { root, compression: 'none' })
-  if (spec.plugin !== false) await ctx.plugin(plugin)
+  if (spec.backend !== false) await ctx.plugin(asPlugin(Jsonl), { root, compression: 'none' })
+  // The fiber is returned so an arm can dispose the plugin the way an operator
+  // unmounting it would: a guard that outlives its own plugin would keep
+  // refusing appends in a process where nothing claims to guard them.
+  const fiber = spec.plugin === false
+    ? undefined
+    : await ctx.plugin({ name: plugin.name, inject: plugin.inject, apply: plugin.apply })
   const persistence = ctx.get('sessionPersistence')
-  return { ctx, root, persistence, logged, plant: plant.bind(null, persistence) }
+  return { ctx, root, persistence, logged, fiber, plant: plant.bind(null, persistence) }
 }
 
 /**
