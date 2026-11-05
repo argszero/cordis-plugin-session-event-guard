@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
-  KNOWN_EVENT_TYPES, SessionEventGuardError, buildExternalEvent, renderWriteVerdict, standingOf,
+  knownEventTypes, SessionEventGuardError, buildExternalEvent, renderWriteVerdict, standingOf,
   vocabularyReport, writeVerdict,
 } from '../lib/index.js'
 import { EXTERNAL } from './harness.mjs'
@@ -17,7 +17,7 @@ import { EXTERNAL } from './harness.mjs'
 describe('standingOf', () => {
   it('calls a declared type known', () => {
     assert.equal(standingOf('user/message'), 'known')
-    assert.equal(KNOWN_EVENT_TYPES.has('user/message'), true)
+    assert.equal(knownEventTypes().has('user/message'), true)
   })
 
   it('calls an undeclared type required when the envelope has no marker', () => {
@@ -37,7 +37,7 @@ describe('standingOf', () => {
 
   it('reports which build answered', () => {
     const report = vocabularyReport()
-    assert.equal(report.size, KNOWN_EVENT_TYPES.size)
+    assert.equal(report.size, knownEventTypes().size)
     assert.match(report.version, /^\d+\.\d+\.\d+/)
   })
 })

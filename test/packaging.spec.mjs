@@ -28,6 +28,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import semver from 'semver'
+import { HOST_PACKAGES } from '../lib/host.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
@@ -99,6 +100,21 @@ const runtimeDeclared = new Set([
 /** The harness packages whose API this plugin is compiled against. */
 const dshPeers = Object.keys(manifest.peerDependencies ?? {}).filter(name => name.startsWith('@deepseek-ai/dsh-'))
 
+/**
+ * Static `import ... from` statements in one shipped module.
+ *
+ * Only the static form binds at module evaluation, which is what fails while a
+ * profile is loading the plugin. A `require()` inside a function body runs when
+ * that function is called, which is the whole point of `./host.js`.
+ * @param source - the module's text.
+ * @returns the bare specifiers it imports at module scope.
+ */
+function staticImports(source) {
+  const found = []
+  for (const match of source.matchAll(/^[ \t]*import\s[^;]*?from\s*['"]([^'"]+)['"]/gm)) found.push(match[1])
+  return found.filter(specifier => !specifier.startsWith('.') && !specifier.startsWith('node:'))
+}
+
 const sourceFiles = [...walk(join(ROOT, 'src'), ['.ts']), ...walk(join(ROOT, 'lib'), ['.js'])]
 const imported = new Set()
 for (const file of sourceFiles) {
@@ -118,8 +134,38 @@ test('the guard has something to guard', () => {
   const relative = sourceFiles.flatMap(file => allSpecifiers(readFileSync(file, 'utf8')).filter(specifier => specifier.startsWith('.')))
   assert.ok(sourceFiles.some(file => file.endsWith(join('src', 'index.ts'))), 'src/index.ts must be scanned')
   assert.ok(sourceFiles.some(file => file.endsWith(join('lib', 'index.js'))), 'lib/index.js must be built and scanned')
-  assert.ok(imported.size >= 1, `expected at least one bare import, saw ${imported.size}`)
+  assert.ok(sourceFiles.length >= 8, `expected the shipped modules to be scanned, saw ${sourceFiles.length}`)
   assert.ok(relative.length >= 4, `expected the entry to import its own modules, saw ${relative.length} relative specifiers`)
+})
+
+test('no shipped module imports a harness package at module scope', () => {
+  // The defect this package shipped: a plugin installed into a profile imports
+  // `@deepseek-ai/dsh-session` at module scope, the profile pins
+  // `autoInstallPeers: false`, and the import throws ERR_MODULE_NOT_FOUND while
+  // the loader is still evaluating the module — before a single function of this
+  // plugin can run, and before any of its diagnostics could say why.
+  const offenders = []
+  for (const file of walk(join(ROOT, 'lib'), ['.js'])) {
+    for (const specifier of staticImports(readFileSync(file, 'utf8'))) {
+      if (specifier.startsWith('@deepseek-ai/')) offenders.push(`${file.slice(ROOT.length + 1)} -> ${specifier}`)
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'shipped modules that bind a harness package at module scope: ' + offenders.join(', ')
+      + ' — reach the host through lib/host.js instead, or the plugin cannot load in a profile',
+  )
+})
+
+test('the packages the host resolver reaches for are declared as peers', () => {
+  // The code resolves these at call time, so no static import exists to compare
+  // the manifest against — but the install-time compatibility gate reads the
+  // peer declaration, and a resolution target that is not declared there is a
+  // version claim nobody can check.
+  for (const name of HOST_PACKAGES) {
+    assert.ok(runtimeDeclared.has(name), `${name} is resolved at runtime but is not declared in the manifest`)
+  }
 })
 
 test('every bare import in the published artifact is a runtime dependency', () => {
@@ -133,7 +179,7 @@ test('every bare import in the published artifact is a runtime dependency', () =
 })
 
 test('no runtime dependency is declared without being imported', () => {
-  const unused = [...runtimeDeclared].filter(name => !imported.has(name))
+  const unused = [...runtimeDeclared].filter(name => !imported.has(name) && !HOST_PACKAGES.includes(name))
   assert.deepEqual(unused, [], `declared but never imported by shipped code: ${unused.join(', ')}`)
 })
 
@@ -170,8 +216,8 @@ test('the tarball carries the entry, its modules, the bundle patch, and the type
   const paths = packedPaths()
   for (const required of [
     'package.json',
-    'lib/index.js', 'lib/vocabulary.js', 'lib/classify.js', 'lib/envelope.js', 'lib/audit.js', 'lib/report.js',
-    'lib/types/index.d.ts', 'lib/types/vocabulary.d.ts', 'lib/types/classify.d.ts',
+    'lib/index.js', 'lib/host.js', 'lib/vocabulary.js', 'lib/classify.js', 'lib/envelope.js', 'lib/audit.js', 'lib/report.js',
+    'lib/types/index.d.ts', 'lib/types/host.d.ts', 'lib/types/vocabulary.d.ts', 'lib/types/classify.d.ts',
     'lib/types/envelope.d.ts', 'lib/types/audit.d.ts', 'lib/types/report.d.ts',
     'cordis.patch.yml', 'README.md', 'LICENSE',
   ]) {

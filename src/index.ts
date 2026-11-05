@@ -47,15 +47,15 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool } from '@deepseek-ai/dsh-tools'
 import { auditStore, auditStoredSession } from './audit.ts'
 import type { SessionAudit } from './audit.ts'
 import { writeVerdict } from './classify.ts'
 import type { WriteVerdict } from './classify.ts'
+import { hostModules } from './host.ts'
 import { renderLiveSources, renderSourceVerdict, renderStoreAudit, renderWriteVerdict } from './report.ts'
 import { scanEventSources, sourceVerdict } from './source-kind.ts'
 import type { SourceOffence, SourceVerdict } from './source-kind.ts'
-import { KNOWN_EVENT_TYPES, standingOf, vocabularyReport } from './vocabulary.ts'
+import { knownEventTypes, standingOf, vocabularyReport } from './vocabulary.ts'
 import { installWriteVeto } from './veto.ts'
 import type { VetoMode, VetoRefusal } from './veto.ts'
 
@@ -74,7 +74,7 @@ export {
 export type {
   MessageSlotSpec, SourceDefect, SourceInspection, SourceOffence, SourceReplacement, SourceVerdict,
 } from './source-kind.ts'
-export { KNOWN_EVENT_TYPES, standingOf, vocabularyReport } from './vocabulary.ts'
+export { knownEventTypes, standingOf, vocabularyReport } from './vocabulary.ts'
 export type { EventStanding, VocabularyReport } from './vocabulary.ts'
 export { installWriteVeto, refusalFor, SENTINEL_SEQ, VETO_MARK } from './veto.ts'
 export type { VetoHandle, VetoMode, VetoOutcome, VetoRefusal } from './veto.ts'
@@ -246,7 +246,7 @@ export function apply(ctx: Context): void {
     })
     ctx.logger.warn(
       `session-event-guard: session "${session.id}" appended event type "${event.type}" (seq ${event.seq}),`
-      + ` which this build's vocabulary of ${KNOWN_EVENT_TYPES.size} types does not declare and whose envelope`
+      + ` which this build's vocabulary of ${knownEventTypes().size} types does not declare and whose envelope`
       + ' carries no `ignorable` marker. Session.append cannot set that marker, so this is a REQUIRED event:'
       + ' a reader that does not load the writing plugin must refuse this whole log. Write the envelope'
       + ' yourself through ctx.sessionPersistence.open(id, \'write\') with `ignorable: true`'
@@ -310,7 +310,7 @@ export function apply(ctx: Context): void {
     return created
   }
 
-  ctx.tools.register(defineTool({
+  ctx.tools.register(hostModules().defineTool({
     name: TOOL,
     description:
       'Check whether a custom session event will survive a reader that does not load the plugin that wrote it,'

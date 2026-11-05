@@ -15,7 +15,8 @@
  * runs it (`validateSessionEventData` → `validateSurfaceMetadata` →
  * `assertMessageEventShape`). So this module asks the package instead of
  * duplicating it: it builds the envelope `append` is about to build, hands it
- * to `adoptSessionEvent`, and refuses the append when that throws.
+ * to the host's own `adoptSessionEvent` (see `./host.ts`), and refuses the append
+ * when that throws.
  *
  * Two details make the oracle exact rather than approximate:
  *

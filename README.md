@@ -29,7 +29,31 @@ Mount it:
   name: '@argszero/cordis-plugin-session-event-guard'
 ```
 
-Published as `@argszero/cordis-plugin-session-event-guard@0.3.0`.
+Published as `@argszero/cordis-plugin-session-event-guard@0.3.1`.
+
+## Why it loads in a profile
+
+This package declares the harness packages as peers and imports none of them at module scope. A
+profile installs with `autoInstallPeers: false`, so pnpm installs a package's own `dependencies` and
+none of its peers; a module-scope `import ... from '@deepseek-ai/dsh-session'` therefore throws
+`ERR_MODULE_NOT_FOUND` while the loader is still evaluating the plugin, before any of this code can
+run or explain itself.
+
+Declaring them as `dependencies` does not fix that. `@deepseek-ai/dsh-session`'s own entry imports
+`@deepseek-ai/cordis`, `@deepseek-ai/dsh-scope` and `@deepseek-ai/dsh-llm` at module scope, all of
+them peers of *that* package, so the failure simply moves one level down; and where it did load, a
+plugin pinning `@deepseek-ai/dsh-tools` as a runtime dependency silently overwrites the host's core
+packages (discussion #10338), which is the boot failure `profile-duplicate-doctor` exists to find.
+
+So the guard asks the running host instead. `src/host.ts` resolves the packages from a path the host
+itself produced — the module a host frame lives in, read from a stack trace at the moment of use,
+with the application entry, the working directory and finally this package's own tree as fallbacks —
+and `require()` of that file returns the host's *already loaded* module object rather than a second
+copy. The write veto therefore judges with the host's own `adoptSessionEvent`, classifies against
+the host's own vocabulary, and `vocabularyReport()` names the build and the anchor that answered.
+
+If no anchor resolves, the plugin refuses to activate and lists every path it tried: it does not
+load and quietly accept everything.
 
 ## The gap, exactly
 
@@ -247,8 +271,9 @@ and never edits an event; it hands the caller the exact object to write instead.
 - **A refused log is enumerated only up to its first offender.** The reader stops there, so the audit
   reports one located refusal and says the count is a lower bound instead of presenting what it can see
   as what exists.
-- **The vocabulary is the one this process resolved.** `KNOWN_SESSION_EVENT_TYPES` is read through the
-  `@deepseek-ai/dsh-session` peer, so inside one process it is the host's copy; every report names the
+- **The vocabulary is the one this process resolved.** `KNOWN_SESSION_EVENT_TYPES` is read from the
+  running host's own `dsh-session` (see *Why it loads in a profile*), so inside one process it is the
+  host's copy; every report names the
   version that answered. A plugin carrying its own nested copy would classify against a different set,
   which is why the version is disclosed rather than assumed.
 - **A store sweep opens the newest `limit` sessions** (default 20) and says how many it skipped; a

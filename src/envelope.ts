@@ -15,7 +15,7 @@
  * @module @argszero/cordis-plugin-session-event-guard/envelope
  */
 
-import { KNOWN_EVENT_TYPES } from './vocabulary.ts'
+import { knownEventTypes } from './vocabulary.ts'
 
 /** A refusal this package raises before a bad event can reach storage. */
 export class SessionEventGuardError extends Error {
@@ -68,7 +68,7 @@ export interface ExternalEvent {
  */
 export function buildExternalEvent(input: ExternalEventInput): ExternalEvent {
   const { type } = input
-  if (KNOWN_EVENT_TYPES.has(type)) {
+  if (knownEventTypes().has(type)) {
     throw new SessionEventGuardError(
       'KNOWN_TYPE',
       `session-event-guard: "${type}" is declared by this build's generated vocabulary, so it is a KNOWN`

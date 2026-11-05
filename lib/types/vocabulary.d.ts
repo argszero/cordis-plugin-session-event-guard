@@ -10,8 +10,8 @@
  * the compatibility mechanism is the persisted envelope marker rather than
  * event-name registration.
  *
- * This module resolves that set through the peer dependency, so within one
- * process it is the host's copy. {@link vocabularyReport} records which build
+ * This module resolves that set from the running host (`./host.ts`), so within
+ * one process it is the host's copy. {@link vocabularyReport} records which build
  * answered, because a plugin that carries its own copy of `dsh-session` would
  * otherwise silently classify against a vocabulary the host does not use.
  *
@@ -29,8 +29,15 @@
  *   an unrecognized required event may change how the rest of the log reads.
  */
 export type EventStanding = 'known' | 'omittable' | 'required';
-/** The vocabulary this process's `dsh-session` declares. */
-export declare const KNOWN_EVENT_TYPES: ReadonlySet<string>;
+/**
+ * The vocabulary the running host's `dsh-session` declares.
+ *
+ * A function rather than a constant because this package imports no harness
+ * code at module scope: the host is reached on first use, so the package loads
+ * in a profile that installs none of it (see `./host.ts`).
+ * @returns every event type the host's build declares.
+ */
+export declare function knownEventTypes(): ReadonlySet<string>;
 /**
  * The standing of one type name against this build's vocabulary.
  * @param type - the event type name as it would be stored.
@@ -44,13 +51,15 @@ export interface VocabularyReport {
     size: number;
     /** Version of the resolved `@deepseek-ai/dsh-session`, or `unknown`. */
     version: string;
+    /** The file path whose resolution answered, so a report can name its source. */
+    anchor: string;
 }
 /**
- * Identify the `dsh-session` build whose vocabulary {@link KNOWN_EVENT_TYPES}
+ * Identify the `dsh-session` build whose vocabulary {@link knownEventTypes}
  * is. Disclosed rather than assumed: a plugin loaded with its own nested copy
  * would classify against a different set than the host's read path, and the
  * only honest thing to do is name the build that answered.
- * @returns the size and resolved version.
+ * @returns the size, the resolved version, and the anchor that answered.
  */
 export declare function vocabularyReport(): VocabularyReport;
 //# sourceMappingURL=vocabulary.d.ts.map

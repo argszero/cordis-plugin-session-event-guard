@@ -57,7 +57,7 @@ export type { ExternalEvent, ExternalEventInput } from './envelope.ts';
 export { renderLiveSources, renderSessionAudit, renderSourceVerdict, renderStoreAudit, renderWriteVerdict, } from './report.ts';
 export { MESSAGE_SLOTS, inspectSource, replacementFor, scanEventSources, slotLabel, sourceVerdict, walkMessageSlots, } from './source-kind.ts';
 export type { MessageSlotSpec, SourceDefect, SourceInspection, SourceOffence, SourceReplacement, SourceVerdict, } from './source-kind.ts';
-export { KNOWN_EVENT_TYPES, standingOf, vocabularyReport } from './vocabulary.ts';
+export { knownEventTypes, standingOf, vocabularyReport } from './vocabulary.ts';
 export type { EventStanding, VocabularyReport } from './vocabulary.ts';
 export { installWriteVeto, refusalFor, SENTINEL_SEQ, VETO_MARK } from './veto.ts';
 export type { VetoHandle, VetoMode, VetoOutcome, VetoRefusal } from './veto.ts';

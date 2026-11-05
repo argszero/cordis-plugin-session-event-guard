@@ -10,16 +10,15 @@
  * the compatibility mechanism is the persisted envelope marker rather than
  * event-name registration.
  *
- * This module resolves that set through the peer dependency, so within one
- * process it is the host's copy. {@link vocabularyReport} records which build
+ * This module resolves that set from the running host (`./host.ts`), so within
+ * one process it is the host's copy. {@link vocabularyReport} records which build
  * answered, because a plugin that carries its own copy of `dsh-session` would
  * otherwise silently classify against a vocabulary the host does not use.
  *
  * @module @argszero/cordis-plugin-session-event-guard/vocabulary
  */
 
-import { createRequire } from 'node:module'
-import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
+import { hostModules } from './host.ts'
 
 /**
  * How one event stands against a reader's vocabulary.
@@ -34,8 +33,17 @@ import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
  */
 export type EventStanding = 'known' | 'omittable' | 'required'
 
-/** The vocabulary this process's `dsh-session` declares. */
-export const KNOWN_EVENT_TYPES: ReadonlySet<string> = KNOWN_SESSION_EVENT_TYPES
+/**
+ * The vocabulary the running host's `dsh-session` declares.
+ *
+ * A function rather than a constant because this package imports no harness
+ * code at module scope: the host is reached on first use, so the package loads
+ * in a profile that installs none of it (see `./host.ts`).
+ * @returns every event type the host's build declares.
+ */
+export function knownEventTypes(): ReadonlySet<string> {
+  return hostModules().session.knownTypes
+}
 
 /**
  * The standing of one type name against this build's vocabulary.
@@ -44,7 +52,7 @@ export const KNOWN_EVENT_TYPES: ReadonlySet<string> = KNOWN_SESSION_EVENT_TYPES
  * @returns the standing.
  */
 export function standingOf(type: string, ignorable?: unknown): EventStanding {
-  if (KNOWN_EVENT_TYPES.has(type)) return 'known'
+  if (knownEventTypes().has(type)) return 'known'
   return ignorable === true ? 'omittable' : 'required'
 }
 
@@ -54,31 +62,19 @@ export interface VocabularyReport {
   size: number
   /** Version of the resolved `@deepseek-ai/dsh-session`, or `unknown`. */
   version: string
+  /** The file path whose resolution answered, so a report can name its source. */
+  anchor: string
 }
 
 /**
- * Identify the `dsh-session` build whose vocabulary {@link KNOWN_EVENT_TYPES}
+ * Identify the `dsh-session` build whose vocabulary {@link knownEventTypes}
  * is. Disclosed rather than assumed: a plugin loaded with its own nested copy
  * would classify against a different set than the host's read path, and the
  * only honest thing to do is name the build that answered.
- * @returns the size and resolved version.
+ * @returns the size, the resolved version, and the anchor that answered.
  */
 export function vocabularyReport(): VocabularyReport {
-  return { size: KNOWN_EVENT_TYPES.size, version: resolvedSessionVersion() }
+  const host = hostModules()
+  return { size: host.session.knownTypes.size, version: host.session.version, anchor: host.anchor }
 }
 
-/**
- * Read the version of the resolved peer, without importing runtime code from
- * it a second time.
- * @returns the version string, or `unknown` when the manifest is unreachable.
- */
-function resolvedSessionVersion(): string {
-  try {
-    const require = createRequire(import.meta.url)
-    const manifest: unknown = require('@deepseek-ai/dsh-session/package.json')
-    const version = (manifest as { version?: unknown }).version
-    return typeof version === 'string' ? version : 'unknown'
-  } catch {
-    return 'unknown'
-  }
-}

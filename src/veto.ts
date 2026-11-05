@@ -15,7 +15,8 @@
  * runs it (`validateSessionEventData` → `validateSurfaceMetadata` →
  * `assertMessageEventShape`). So this module asks the package instead of
  * duplicating it: it builds the envelope `append` is about to build, hands it
- * to `adoptSessionEvent`, and refuses the append when that throws.
+ * to the host's own `adoptSessionEvent` (see `./host.ts`), and refuses the append
+ * when that throws.
  *
  * Two details make the oracle exact rather than approximate:
  *
@@ -39,8 +40,8 @@
  * @module @argszero/cordis-plugin-session-event-guard/veto
  */
 
-import { adoptSessionEvent } from '@deepseek-ai/dsh-session'
 import { SessionEventGuardError } from './envelope.ts'
+import { hostModules } from './host.ts'
 
 /** Brand an installed veto carries, so a second install is a no-op. */
 export const VETO_MARK: unique symbol = Symbol.for('argszero.cordis-plugin-session-event-guard/write-veto')
@@ -117,7 +118,7 @@ export function refusalFor(type: string, data: unknown, intent: unknown): VetoRe
     ...surface?.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: surface.sourceEventSeqs },
   }
   try {
-    adoptSessionEvent(candidate as never)
+    hostModules().session.adoptSessionEvent(candidate as never)
     return undefined
   } catch (error) {
     // A payload `append` refuses on its own terms is not this module's verdict.

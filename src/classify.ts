@@ -26,7 +26,7 @@
  * @module @argszero/cordis-plugin-session-event-guard/classify
  */
 
-import { KNOWN_EVENT_TYPES, standingOf } from './vocabulary.ts'
+import { knownEventTypes, standingOf } from './vocabulary.ts'
 import type { EventStanding } from './vocabulary.ts'
 import { MESSAGE_SLOTS, slotLabel } from './source-kind.ts'
 
@@ -65,7 +65,7 @@ export interface WriteVerdict {
  * @returns the verdict.
  */
 export function writeVerdict(type: string): WriteVerdict {
-  const inVocabulary = KNOWN_EVENT_TYPES.has(type)
+  const inVocabulary = knownEventTypes().has(type)
   const sourceSlots = MESSAGE_SLOTS.filter(slot => slot.type === type).map(slot => slotLabel(slot))
   // `Session.append` freezes `{ type, seq, time, data, ...surfaceMetadata }`;
   // there is no marker to read, so the envelope is judged as it is built.
@@ -95,7 +95,7 @@ export function writeVerdict(type: string): WriteVerdict {
     seam,
     verdict: 'seam-required',
     advice: [
-      `"${type}" is NOT in this build's vocabulary (${KNOWN_EVENT_TYPES.size} types, all declared in the`
+      `"${type}" is NOT in this build's vocabulary (${knownEventTypes().size} types, all declared in the`
       + ' harness repository). Out-of-repo plugin types are outside that set by construction.',
       'Session.append CANNOT mark an event omittable: it freezes the envelope itself and the envelope it'
       + ' freezes has no `ignorable` field. So a write through session.append(type, data) is a REQUIRED'
