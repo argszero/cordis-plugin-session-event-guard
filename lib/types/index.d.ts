@@ -59,6 +59,8 @@ export { MESSAGE_SLOTS, inspectSource, replacementFor, scanEventSources, slotLab
 export type { MessageSlotSpec, SourceDefect, SourceInspection, SourceOffence, SourceReplacement, SourceVerdict, } from './source-kind.ts';
 export { knownEventTypes, standingOf, vocabularyReport } from './vocabulary.ts';
 export type { EventStanding, VocabularyReport } from './vocabulary.ts';
+export { resolutionCounts, resolutionReport } from './host.ts';
+export type { ResolutionKind, ResolutionReport, ResolutionReached, ResolutionUnreached } from './host.ts';
 export { installWriteVeto, refusalFor, SENTINEL_SEQ, VETO_MARK } from './veto.ts';
 export type { VetoHandle, VetoMode, VetoOutcome, VetoRefusal } from './veto.ts';
 export declare const name = "session-event-guard";

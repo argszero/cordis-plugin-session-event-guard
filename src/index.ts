@@ -51,7 +51,7 @@ import { auditStore, auditStoredSession } from './audit.ts'
 import type { SessionAudit } from './audit.ts'
 import { writeVerdict } from './classify.ts'
 import type { WriteVerdict } from './classify.ts'
-import { hostModules } from './host.ts'
+import { hostModules, resolutionReport } from './host.ts'
 import { renderLiveSources, renderSourceVerdict, renderStoreAudit, renderWriteVerdict } from './report.ts'
 import { scanEventSources, sourceVerdict } from './source-kind.ts'
 import type { SourceOffence, SourceVerdict } from './source-kind.ts'
@@ -76,6 +76,8 @@ export type {
 } from './source-kind.ts'
 export { knownEventTypes, standingOf, vocabularyReport } from './vocabulary.ts'
 export type { EventStanding, VocabularyReport } from './vocabulary.ts'
+export { resolutionCounts, resolutionReport } from './host.ts'
+export type { ResolutionKind, ResolutionReport, ResolutionReached, ResolutionUnreached } from './host.ts'
 export { installWriteVeto, refusalFor, SENTINEL_SEQ, VETO_MARK } from './veto.ts'
 export type { VetoHandle, VetoMode, VetoOutcome, VetoRefusal } from './veto.ts'
 
@@ -177,6 +179,34 @@ export interface GuardToolValue {
  * @param ctx - the plugin's context.
  */
 export function apply(ctx: Context): void {
+  // Reach the host before mounting anything, and act on the answer. A resolver
+  // failure is reported at error level with every anchor it tried, and counted
+  // in `resolutionCounts()`; the plugin then installs no veto and registers no
+  // tool. The alternative — mounting anyway and letting the same failure surface
+  // later, inside `append` — arrives as a refusal this plugin never measured,
+  // and an operator reads a fabricated verdict instead of an outage.
+  const resolution = resolutionReport()
+  if (!resolution.reached) {
+    ctx.logger.error(
+      `${resolution.reason} Tried:\n${resolution.tried.map(path => `  - ${path}`).join('\n')}`
+      + ` (resolution failures so far: ${resolution.failures})`,
+    )
+    return
+  }
+  // `host-frame` proves the instance is the host's own; `fallback` only proves a
+  // package by that name resolved. The second is disclosed, never presented as
+  // the first — but it is evidence quality rather than an offence, so it is a
+  // debug note and a field of the report, not a warning in the offence log. A
+  // plugin that warned about its own development checkout would teach operators
+  // to ignore the log that carries the real refusals.
+  if (resolution.kind === 'fallback') {
+    ctx.logger.debug(
+      'session-event-guard: reached the harness through a fallback anchor rather than a host frame,'
+      + ' so the vocabulary may describe a second copy of the host packages instead of the ones this'
+      + ` process runs: ${resolution.anchor}.`,
+    )
+  }
+
   const ledger = new Map<string, Map<string, LiveOffence>>()
   const sourceLedger = new Map<string, Map<string, LiveSourceOffence>>()
   const refused = new Map<string, Map<string, LiveRefusal>>()

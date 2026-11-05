@@ -53,6 +53,15 @@ export interface VocabularyReport {
     version: string;
     /** The file path whose resolution answered, so a report can name its source. */
     anchor: string;
+    /**
+     * Whether that source is provably the host's own build.
+     *
+     * `host-frame` means a host module was on the stack when the question was
+     * asked, so the answer describes the build the reader will use. `fallback`
+     * means the answer may describe a second copy of the same package — the
+     * report says which rather than presenting both as the host's.
+     */
+    kind: 'host-frame' | 'fallback';
 }
 /**
  * Identify the `dsh-session` build whose vocabulary {@link knownEventTypes}

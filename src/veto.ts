@@ -117,8 +117,20 @@ export function refusalFor(type: string, data: unknown, intent: unknown): VetoRe
     ...surface?.surfaceOp === undefined ? {} : { surfaceOp: surface.surfaceOp },
     ...surface?.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: surface.sourceEventSeqs },
   }
+  // The reader is obtained first and separately. `hostModules()` throws when no
+  // anchor reaches the running host, and that is not a verdict about this
+  // payload: folding it into the `catch` below would report "the reader refused
+  // this event", with the resolver's own sentence as the reason, for *every*
+  // append — a fabricated refusal where no reading was taken. The outage is
+  // reported once and loudly at mount (`./index.ts`); here it declines to judge.
+  let reader: ReturnType<typeof hostModules>
   try {
-    hostModules().session.adoptSessionEvent(candidate as never)
+    reader = hostModules()
+  } catch {
+    return undefined
+  }
+  try {
+    reader.session.adoptSessionEvent(candidate as never)
     return undefined
   } catch (error) {
     // A payload `append` refuses on its own terms is not this module's verdict.

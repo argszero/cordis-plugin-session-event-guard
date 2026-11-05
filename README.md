@@ -29,7 +29,7 @@ Mount it:
   name: '@argszero/cordis-plugin-session-event-guard'
 ```
 
-Published as `@argszero/cordis-plugin-session-event-guard@0.3.1`.
+Published as `@argszero/cordis-plugin-session-event-guard@0.3.2`.
 
 ## Why it loads in a profile
 
@@ -52,8 +52,39 @@ and `require()` of that file returns the host's *already loaded* module object r
 copy. The write veto therefore judges with the host's own `adoptSessionEvent`, classifies against
 the host's own vocabulary, and `vocabularyReport()` names the build and the anchor that answered.
 
-If no anchor resolves, the plugin refuses to activate and lists every path it tried: it does not
-load and quietly accept everything.
+## What the resolution is evidence of
+
+A resolution that succeeds is not yet a resolution of the host's own module. `require()` answers
+identically whether the base path reaches the host's install or a second copy of the same package,
+so the guard reports which evidence it had rather than presenting both as the same reading:
+
+- **`host-frame`** — a `node_modules/@deepseek-ai/*` module was on the stack, so the host is the
+  caller and the resolved object is the one it is running. This is the shipped answer.
+- **`fallback`** — the application entry, the working directory, or this package's own tree
+  answered. Legitimate in a development checkout; in a deployment it may describe a nested copy.
+  `vocabularyReport().kind` names it, and the plugin logs the anchor at debug level, so a deployment
+  that is classifying against the wrong build can be told apart from one that is not.
+
+**The host shape where the anchor fails** is one where no harness code is on the stack *and* neither
+the process entry nor the working directory sits inside the install: an embedded or bundled host that
+calls the plugin from its own runtime rather than from a path that resolves `node_modules`, or a
+process that runs the plugin outside the application entry. The suite measures that shape by packing
+this package into a directory that resolves nothing (`test/resolution.spec.mjs`), so the statement
+below is a reading rather than a guess.
+
+In that shape the plugin **reports and installs nothing**. `resolutionReport()` returns
+`reached: false` with `inactive: true`, every anchor it tried, a `reason`, and a count of failures;
+`apply()` writes one error-level line carrying all of that, and returns before registering a tool,
+a veto or a lifecycle hook. Three things it deliberately does not do:
+
+- **it does not load and accept everything.** That is the silent no-op this package exists to
+  refuse: the log would look guarded and the refusals would never come;
+- **it does not fall back to a copy of its own.** A vendored `adoptSessionEvent` would answer
+  confidently about a reader the host may not be running;
+- **it does not report the outage as a verdict.** `refusalFor` obtains the reader first and asks it
+  second; when no reader was obtained, there is no judgement to give. Treating the resolver's
+  failure as "the reader refused this event" would have fabricated a refusal — and the resolver's
+  own error message as its reason — for every append in the process.
 
 ## The gap, exactly
 
